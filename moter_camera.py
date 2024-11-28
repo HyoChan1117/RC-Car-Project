@@ -1,6 +1,10 @@
-import RPi.GPIO as GPIO
 import time
+import os
+import subprocess
+import threading
+import csv
 from pynput import keyboard
+import RPi.GPIO as GPIO
 
 # GPIO 핀 설정
 SERVO_PIN = 12  # 서보모터 핀 번호
@@ -17,7 +21,7 @@ GPIO.setup(ENA, GPIO.OUT)
 
 # PWM 설정
 servo_pwm = GPIO.PWM(SERVO_PIN, 50)  # 서보모터: 50Hz
-dc_motor_pwm = GPIO.PWM(ENA, 100)   # DC 모터: 100Hz
+dc_motor_pwm = GPIO.PWM(ENA, 100)    # DC 모터: 100Hz
 
 # PWM 시작
 servo_pwm.start(0)
@@ -64,52 +68,90 @@ def motor_stop():
     dc_motor_pwm.ChangeDutyCycle(0)
     print("모터 정지")
 
-# 초기 서보모터 각도 설정 (90도)
+# 사진 촬영 및 CSV 저장
+def capture_image_with_label(label):
+    session_dir = "dataset/session_01"
+    os.makedirs(session_dir, exist_ok=True)
+    csv_path = "dataset/line_tracking_data.csv"
+
+    # CSV 파일 초기화 (최초 실행 시 열 생성)
+    if not os.path.exists(csv_path):
+        with open(csv_path, mode='w', newline='') as file:
+            writer = csv.writer(file)
+            writer.writerow(["image_path", "timestamp", "label"])
+
+    # 사진 촬영 및 저장
+    timestamp = int(time.time() * 1000)
+    file_path = f"{session_dir}/image_{label}_{timestamp}.jpg"
+    try:
+        subprocess.run(["libcamera-still", "-o", file_path, "--nopreview"], check=True)
+        print(f"사진 촬영 완료: {file_path}")
+
+        # CSV에 저장
+        with open(csv_path, mode='a', newline='') as file:
+            writer = csv.writer(file)
+            writer.writerow([file_path, timestamp, label])
+            print(f"데이터 저장 완료: {file_path}, {label}")
+
+        # 리소스 해제 및 안정화 대기
+        subprocess.run(["killall", "libcamera-still"], check=False)
+        time.sleep(0.5)  # 카메라 안정화를 위해 대기
+    except subprocess.CalledProcessError:
+        print(f"사진 촬영 실패: {file_path}")
+
+# 초기 서보모터 각도 설정
 set_servo_angle(current_angle)
 
-# 각도 변화량 설정
 ANGLE_INCREMENT = 5
 
-# 키 입력 처리 함수
+# 라벨 입력 변수
+current_label = "none"
+
+# 키 입력 처리
 def on_press(key):
-    global current_angle
+    global current_angle, current_label
     try:
-        if key == keyboard.Key.up:  # 위쪽 방향키: DC 모터 전진 (속도 증가)
+        if key == keyboard.Key.up:
             motor_forward()
-        elif key == keyboard.Key.down:  # 아래쪽 방향키: DC 모터 속도 감소
+        elif key == keyboard.Key.down:
             motor_slow_down()
-        elif key == keyboard.Key.left:  # 왼쪽 방향키: 서보모터 왼쪽 회전
+        elif key == keyboard.Key.left:
             current_angle = max(0, current_angle - ANGLE_INCREMENT)
             set_servo_angle(current_angle)
             print(f"서보모터 왼쪽 회전: 각도 {current_angle}도")
-        elif key == keyboard.Key.right:  # 오른쪽 방향키: 서보모터 오른쪽 회전
+        elif key == keyboard.Key.right:
             current_angle = min(180, current_angle + ANGLE_INCREMENT)
             set_servo_angle(current_angle)
             print(f"서보모터 오른쪽 회전: 각도 {current_angle}도")
-        elif key == keyboard.Key.space:  # Space 키: 모터 정지
+        elif key == keyboard.Key.space:
             motor_stop()
+        elif hasattr(key, 'char') and key.char in ['s', 'l', 'r']:
+            current_label = {'s': 'straight', 'l': 'left_turn', 'r': 'right_turn'}[key.char]
+            print(f"라벨 변경: {current_label}")
+            capture_image_with_label(current_label)  # 기본 촬영(1장)
     except AttributeError:
         pass
 
 def on_release(key):
     if key == keyboard.Key.esc:
-        # ESC 키를 누르면 프로그램 종료
         print("프로그램을 종료합니다.")
         return False
 
-# 키보드 리스너 시작
-print("키 입력을 기다리는 중입니다...")
-listener = keyboard.Listener(on_press=on_press, on_release=on_release)
-listener.start()
+# 키보드 리스너 스레드
+def motor_control_thread():
+    listener = keyboard.Listener(on_press=on_press, on_release=on_release)
+    listener.start()
+    listener.join()
 
-# 메인 루프
+# 메인 실행
 try:
-    listener.join()  # 키보드 리스너가 종료될 때까지 대기
+    motor_thread = threading.Thread(target=motor_control_thread)
+    motor_thread.start()
+    motor_thread.join()
 except KeyboardInterrupt:
-    pass
+    print("프로그램 종료 중...")
 finally:
-    # 프로그램 종료 시 GPIO 핀 초기화
     servo_pwm.stop()
     dc_motor_pwm.stop()
     GPIO.cleanup()
-    print("프로그램을 종료합니다.")
+    print("프로그램이 종료되었습니다.")

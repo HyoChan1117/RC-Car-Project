@@ -33,7 +33,7 @@ while True:
 
         # numpy 배열로 변환 후 OpenCV로 읽기
         np_arr = np.frombuffer(jpeg_frame, dtype=np.uint8)
-        frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+        frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)  
 
         # 영상 출력
         if frame is not None:
